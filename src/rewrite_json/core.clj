@@ -118,7 +118,7 @@
           ;; Object key
           (if-let [val-loc (z/get-key root-loc segment)]
             (-> val-loc
-                (z/replace value-node)
+                (z/replace (z/pretty-value-node value-node root-loc))
                 z/root)
             ;; Key doesn't exist — append
             (-> root-loc
@@ -127,7 +127,7 @@
           ;; Array index
           (if-let [target (navigate-path root path)]
             (-> target
-                (z/replace value-node)
+                (z/replace (z/pretty-value-node value-node (z/up target)))
                 z/root)
             (throw (ex-info (str "Array index out of bounds: " segment)
                             {:index segment})))))
@@ -138,7 +138,7 @@
             (if (identical? :object (node/tag parent-node))
               (if-let [val-loc (z/get-key parent-loc last-segment)]
                 (-> val-loc
-                    (z/replace value-node)
+                    (z/replace (z/pretty-value-node value-node parent-loc))
                     z/root)
                 ;; Key doesn't exist in parent object — append entry
                 (-> parent-loc
@@ -150,7 +150,7 @@
           ;; Array index in parent
           (if-let [target (navigate-path root path)]
             (-> target
-                (z/replace value-node)
+                (z/replace (z/pretty-value-node value-node (z/up target)))
                 z/root)
             (throw (ex-info (str "Array index out of bounds: " last-segment)
                             {:index last-segment}))))))))

@@ -205,9 +205,13 @@
       ;; Examine the first entry's internal structure to mimic it
       (let [first-entry (first entries)
             entry-children (node/children first-entry)
-            has-space-after-colon? (some #(and (node/whitespace? %)
-                                               (not (.contains ^String (node/string %) "\n")))
-                                         entry-children)]
+            ;; Space can be a separate whitespace node OR baked into the colon node (e.g. ": ")
+            has-space-after-colon? (or (some #(and (node/whitespace? %)
+                                                   (not (.contains ^String (node/string %) "\n")))
+                                             entry-children)
+                                       (some #(and (node/colon? %)
+                                                   (.endsWith ^String (node/string %) " "))
+                                             entry-children))]
         {:colon-sep (if has-space-after-colon? ": " ":")})
       {:colon-sep ": "})))
 
@@ -217,14 +221,59 @@
         ws-with-newlines (filter #(.contains ^String (node/string %) "\n") ws-nodes)]
     (if (seq ws-with-newlines)
       (let [ws-str ^String (node/string (first ws-with-newlines))
-            ;; Get text after the last newline
-            after-nl (subs ws-str (inc (.lastIndexOf ws-str "\n")))]
+            ;; Text after the last newline = indent for entries inside this container
+            after-nl (subs ws-str (inc (.lastIndexOf ws-str "\n")))
+            ;; Closing indent = one level up = after-nl minus the last indent unit.
+            ;; We detect the unit width by looking at the last 2 chars (tabs vs spaces).
+            closing-indent (if (>= (count after-nl) 2)
+                             (subs after-nl 0 (- (count after-nl) 2))
+                             "")]
         {:newline true
          :indent after-nl
+         :closing-indent closing-indent
          :ws-before (str "\n" after-nl)})
       {:newline false
        :indent ""
+       :closing-indent ""
        :ws-before " "})))
+
+(defn ^:private infer-indent-with-context
+  "Like `infer-indent`, but when the container has no newline whitespace
+   (e.g. it is a freshly created empty object), walks up ancestor zipper
+   locs to find a multi-line container and derives the expected child-level
+   indent for `container-loc` from it.
+
+   Returns the same map shape as `infer-indent`."
+  [container-loc]
+  (let [direct (infer-indent (z/node container-loc))]
+    (if (:newline direct)
+      direct
+      ;; Container has no whitespace — climb ancestors looking for one that does.
+      ;; Only bump extra-levels for object/array ancestors; entry nodes are
+      ;; transparent wrappers and don't add a visual indent level.
+      (loop [loc (z/up container-loc)
+             extra-levels 1]
+        (if (nil? loc)
+          direct  ;; reached root with no multi-line ancestor → stay single-line
+          (let [ancestor-node   (z/node loc)
+                ancestor-tag    (node/tag ancestor-node)
+                ancestor-indent (infer-indent ancestor-node)]
+            (if (:newline ancestor-indent)
+              ;; Found a multi-line ancestor.  The indent for container-loc's
+              ;; children is ancestor's child-indent + extra-levels more steps.
+              (let [unit "  "
+                    child-indent (str (:indent ancestor-indent)
+                                      (apply str (repeat extra-levels unit)))
+                    closing-indent (str (:indent ancestor-indent)
+                                        (apply str (repeat (dec extra-levels) unit)))]
+                {:newline true
+                 :indent child-indent
+                 :closing-indent closing-indent
+                 :ws-before (str "\n" child-indent)})
+              (recur (z/up loc)
+                     (if (contains? #{:object :array} ancestor-tag)
+                       (inc extra-levels)
+                       extra-levels)))))))))
 
 (defn ^:private find-last-idx [pred coll]
   (let [v (vec coll)]
@@ -232,61 +281,89 @@
       (when (>= i 0)
         (if (pred (v i)) i (recur (dec i)))))))
 
-(defn ^:private reindent-node
-  "Recursively adjust the whitespace inside a newly constructed value node
-   so that it matches the indentation style of its future container.
+(defn ^:private build-pretty-node
+  "Recursively build a properly-indented node tree for `value-node`.
 
-   `indent-info`  – map returned by `infer-indent` for the container that
-                    will receive the new entry (keys: :newline, :indent,
-                    :ws-before).
-   `depth`        – how many extra levels deep we are inside the new node
-                    (0 = the immediate children of the container; starts at 1
-                    when we first enter the new value's children).
+   Unlike `reindent-node` (which patched existing whitespace), this function
+   constructs whitespace from scratch, so it works even when `value->node`
+   produced a compact node with no internal whitespace.
 
-   Only `:object` and `:array` nodes are re-indented; scalar values pass
-   through unchanged."
-  [value-node indent-info depth]
-  (let [{:keys [newline indent]} indent-info]
-    (if-not (and newline (contains? #{:object :array} (node/tag value-node)))
-      value-node
-      (let [child-indent (str indent (apply str (repeat depth "  ")))
-            closing-indent (str indent (apply str (repeat (dec depth) "  ")))
-            new-children
-            (mapv
-             (fn [child]
-               (cond
-                 ;; Whitespace containing a newline → replace with our indent
-                 (and (node/whitespace? child)
-                      (.contains ^String (node/string child) "\n"))
-                 (node/whitespace-node (str "\n" child-indent))
+   `child-indent`   – absolute indent string for entries/elements one level
+                      inside this node (e.g. \"    \" for 4 spaces).
+   `closing-indent` – absolute indent string for the closing `}` / `]`
+                      (one level shallower than `child-indent`).
 
-                 ;; Recurse into nested containers
-                 (contains? #{:object :array} (node/tag child))
-                 (reindent-node child indent-info (inc depth))
+   Scalar nodes (string, number, boolean, null) are returned unchanged.
+   Object and array nodes get their children replaced with a multi-line
+   layout."
+  [value-node child-indent closing-indent]
+  (condp identical? (node/tag value-node)
+    :object
+    (let [entries (filter node/entry? (node/children value-node))
+          next-child-indent  (str child-indent "  ")
+          next-closing-indent child-indent
+          new-entries
+          (mapv (fn [entry]
+                  (let [k (node/key-node entry)
+                        v (node/value-of-entry entry)
+                        pretty-v (build-pretty-node v next-child-indent next-closing-indent)]
+                    ;; Use separate colon + whitespace nodes so infer-entry-style
+                    ;; can detect the space and match it for subsequent appended entries.
+                    (node/->EntryNode [k (node/->ColonNode ":") (node/whitespace-node " ") pretty-v])))
+                entries)
+          ;; Interleave: comma + \n+child-indent between entries, \n+closing-indent before }
+          children-with-ws
+          (if (seq new-entries)
+            (-> []
+                (into (mapcat (fn [[i e]]
+                                (if (zero? i)
+                                  [(node/whitespace-node (str "\n" child-indent)) e]
+                                  [(node/->CommaNode ",") (node/whitespace-node (str "\n" child-indent)) e]))
+                              (map-indexed vector new-entries)))
+                (conj (node/whitespace-node (str "\n" closing-indent))))
+            [])]
+      (node/replace-children value-node children-with-ws))
 
-                 ;; Entry nodes: recurse into their value child
-                 (node/entry? child)
-                 (let [entry-children (node/children child)
-                       new-entry-children
-                       (mapv (fn [ec]
-                               (if (contains? #{:object :array} (node/tag ec))
-                                 (reindent-node ec indent-info (inc depth))
-                                 ec))
-                             entry-children)]
-                   (node/replace-children child new-entry-children))
+    :array
+    (let [elements (filter node/value-node? (node/children value-node))
+          next-child-indent  (str child-indent "  ")
+          next-closing-indent child-indent
+          pretty-elements (mapv #(build-pretty-node % next-child-indent next-closing-indent)
+                                elements)
+          children-with-ws
+          (if (seq pretty-elements)
+            (-> []
+                (into (mapcat (fn [[i e]]
+                                (if (zero? i)
+                                  [(node/whitespace-node (str "\n" child-indent)) e]
+                                  [(node/->CommaNode ",") (node/whitespace-node (str "\n" child-indent)) e]))
+                              (map-indexed vector pretty-elements)))
+                (conj (node/whitespace-node (str "\n" closing-indent))))
+            [])]
+      (node/replace-children value-node children-with-ws))
 
-                 :else child))
-             (node/children value-node))
-            ;; Fix the closing whitespace (last whitespace before } or ])
-            ;; It should indent back to the parent level
-            last-ws-idx (find-last-idx node/whitespace? new-children)
-            final-children
-            (if (and last-ws-idx
-                     (.contains ^String (node/string (new-children last-ws-idx)) "\n"))
-              (assoc new-children last-ws-idx
-                     (node/whitespace-node (str "\n" closing-indent)))
-              new-children)]
-        (node/replace-children value-node final-children)))))
+    ;; Scalars — return as-is
+    value-node))
+
+(defn pretty-value-node
+  "Convert `value-node` (already a node, typically from `node/value->node`)
+   to a multi-line formatted node, using `container-loc` (a zipper loc
+   positioned at the object/array that will contain the value) to infer
+   the indentation level.
+
+   Uses `infer-indent-with-context` so that even freshly created empty
+   containers inherit multi-line style from their ancestors.
+
+   When the container uses single-line formatting, or when `value-node` is
+   a scalar, it is returned unchanged."
+  [value-node container-loc]
+  (let [indent-info (infer-indent-with-context container-loc)]
+    (if (and (:newline indent-info)
+             (contains? #{:object :array} (node/tag value-node)))
+      (let [child-indent (str (:indent indent-info) "  ")
+            closing-indent (:indent indent-info)]
+        (build-pretty-node value-node child-indent closing-indent))
+      value-node)))
 
 
 (defn append-entry
@@ -297,11 +374,15 @@
   (let [obj-node (z/node loc)
         children (vec (node/children obj-node))
         style (infer-entry-style loc)
-        indent-info (infer-indent obj-node)
+        indent-info (infer-indent-with-context loc)
         key-n (node/string-node key-name)
-        colon-n (node/->ColonNode (:colon-sep style))
-        indented-value (reindent-node value-node indent-info 1)
-        new-entry (node/->EntryNode [key-n colon-n indented-value])
+        ;; Always produce separate colon + optional whitespace so infer-entry-style
+        ;; can detect the space correctly on subsequent appends.
+        entry-sep (if (= ": " (:colon-sep style))
+                    [(node/->ColonNode ":") (node/whitespace-node " ")]
+                    [(node/->ColonNode ":")])
+        pretty-value (pretty-value-node value-node loc)
+        new-entry (node/->EntryNode (vec (concat [key-n] entry-sep [pretty-value])))
         last-entry-idx (find-last-idx node/entry? children)
         new-children
         (if last-entry-idx
@@ -328,7 +409,7 @@
           (if (:newline indent-info)
             [(node/whitespace-node (:ws-before indent-info))
              new-entry
-             (node/whitespace-node "\n")]
+             (node/whitespace-node (str "\n" (:closing-indent indent-info)))]
             [(node/whitespace-node " ")
              new-entry
              (node/whitespace-node " ")]))]
@@ -337,8 +418,8 @@
 (defn append-element [loc value-node]
   (let [arr-node (z/node loc)
         children (vec (node/children arr-node))
-        indent-info (infer-indent arr-node)
-        value-node (reindent-node value-node indent-info 1)
+        indent-info (infer-indent-with-context loc)
+        value-node (pretty-value-node value-node loc)
         last-val-idx (find-last-idx node/value-node? children)
         new-children
         (if last-val-idx

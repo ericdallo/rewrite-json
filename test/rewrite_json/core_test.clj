@@ -126,6 +126,42 @@
       (is (.contains ^String result "\"name\": \"my-app\""))
       (is (.contains ^String result "\"react\": \"^17.0.0\"")))))
 
+(deftest assoc-in-map-value-formatting-test
+  (let [json "{\n  \"providers\": {\n    \"anthropic\": {\n      \"key\": \"sk-ant\"\n    }\n  }\n}"]
+
+    (testing "replacing an existing multi-line object preserves multi-line formatting"
+      (let [result (-> (rj/parse-string json)
+                       (rj/assoc-in ["providers" "anthropic"] {"key" "sk-ant-new"})
+                       rj/to-string)]
+        ;; Must be multi-line, not inline {"key": ...}
+        (is (.contains ^String result "\"key\": \"sk-ant-new\""))
+        (is (.contains ^String result "\n"))))
+
+    (testing "appending a new sibling object entry matches sibling multi-line formatting"
+      (let [result (-> (rj/parse-string json)
+                       (rj/assoc-in ["providers" "openai"] {"key" "sk-openai"})
+                       rj/to-string)]
+        ;; "openai" entry must be multi-line, consistent with "anthropic" sibling
+        (let [openai-idx (.indexOf ^String result "\"openai\"")
+              openai-section (subs result openai-idx)]
+          (is (pos? (.indexOf ^String openai-section "\n"))
+              "appended entry value should be multi-line like its sibling"))))))
+
+(deftest assoc-in-depth3-missing-intermediate-formatting-test
+  (testing "auto-created intermediate object at depth 3 uses sibling multi-line indent"
+    (let [json "{\n  \"providers\": {\n    \"anthropic\": {\n      \"key\": \"sk-ant\"\n    }\n  }\n}"
+          result (-> (rj/parse-string json)
+                     (rj/assoc-in ["providers" "openai" "key"] "sk-openai")
+                     rj/to-string)]
+      ;; "openai" block must be multi-line, matching "anthropic" sibling
+      (let [openai-idx (.indexOf ^String result "\"openai\"")
+            openai-section (subs result openai-idx)]
+        (is (pos? (.indexOf ^String openai-section "\n"))
+            "auto-created intermediate should be multi-line like its sibling"))
+      ;; leaf value present and round-trips
+      (is (.contains ^String result "\"key\": \"sk-openai\""))
+      (is (= "sk-openai" (rj/get-in (rj/parse-string result) ["providers" "openai" "key"]))))))
+
 (deftest assoc-in-missing-intermediates-test
   (testing "two-level missing path creates intermediate object"
     (let [root (rj/parse-string "{}")
