@@ -89,7 +89,10 @@
 (defn find-key
   "From the current location (which should be an object or positioned
    inside one), find the entry whose key matches `key-name` (string).
-   Returns the zipper positioned at the entry node, or nil."
+   Returns the zipper positioned at the entry node, or nil.
+
+   Note: clojure.zip/down on an empty children seq destructures to a nil
+   node; we guard against that explicitly in the loop."
   [loc key-name]
   (let [obj-loc (if (identical? :object (node/tag (z/node loc)))
                   (z/down loc)
@@ -97,10 +100,11 @@
     (loop [loc obj-loc]
       (when loc
         (let [n (z/node loc)]
-          (if (and (identical? :entry (node/tag n))
-                   (= key-name (node/value (node/key-node n))))
-            loc
-            (recur (z/right loc))))))))
+          (when n  ;; clojure.zip/down on empty children yields nil node
+            (if (and (identical? :entry (node/tag n))
+                     (= key-name (node/value (node/key-node n))))
+              loc
+              (recur (z/right loc)))))))))
 
 (defn find-value [loc v]
   (loop [loc loc]
