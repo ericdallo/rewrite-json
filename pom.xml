@@ -6,6 +6,19 @@
   <artifactId>rewrite-json</artifactId>
   <version>0.1.0</version>
   <name>rewrite-json</name>
+  <description>A Clojure library for format-preserving JSON and JSONC editing</description>
+  <url>https://github.com/ericdallo/rewrite-json</url>
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://opensource.org/licenses/MIT</url>
+    </license>
+  </licenses>
+  <scm>
+    <url>https://github.com/ericdallo/rewrite-json</url>
+    <connection>scm:git:https://github.com/ericdallo/rewrite-json.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/ericdallo/rewrite-json.git</developerConnection>
+  </scm>
   <dependencies>
     <dependency>
       <groupId>org.clojure</groupId>
