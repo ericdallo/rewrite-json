@@ -131,6 +131,6 @@ Paths are vectors of string keys and/or integer indices:
 
 The zipper (built on `clojure.zip`) provides navigation that automatically skips over whitespace and comment nodes, so you work with the semantic structure while the formatting rides along.
 
-## License
+## Support
 
-MIT License — Copyright (c) 2025 Eric Dallo
+Consider support the work of this project [here](https://github.com/sponsors/ericdallo) ❤️
