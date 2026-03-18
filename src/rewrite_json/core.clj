@@ -64,28 +64,64 @@
      (z/value loc)
      not-found)))
 
+(defn ^:private ensure-path
+  "Navigate to `path` inside the zipper `root-loc`, creating any missing
+   intermediate object keys as empty objects along the way.
+   Returns a zipper positioned at the (possibly newly created) node at `path`."
+  [root-loc path]
+  (reduce
+   (fn [loc segment]
+     (cond
+       (string? segment)
+       (if-let [val-loc (z/get-key loc segment)]
+         val-loc
+         ;; Key missing — insert empty object and descend into it
+         (-> loc
+             (z/append-entry segment (node/object-node []))
+             (z/get-key segment)))
+
+       (integer? segment)
+       (let [arr-loc (z/down loc)]
+         (loop [loc arr-loc
+                idx 0]
+           (when loc
+             (if (= idx segment)
+               loc
+               (recur (z/right loc) (inc idx))))))
+
+       :else
+       (throw (ex-info (str "Invalid path segment: " (pr-str segment))
+                       {:segment segment}))))
+   root-loc
+   path))
+
 (defn assoc-in
   "Set the value at `path` in the node tree.
    If the path exists, replaces the value node while preserving surrounding
-   formatting. If the final key doesn't exist in an object, appends a new entry.
+   formatting. If any key along the path doesn't exist in an object, the
+   missing intermediate keys are created as empty objects `{}` (matching
+   clojure.core/assoc-in semantics). If the final key doesn't exist, a new
+   entry is appended.
    `v` can be a Clojure value (string, number, boolean, nil, map, vector)
    or a node.
 
    Returns the updated root node."
   [root path v]
-  (let [value-node (if (satisfies? node/Node v) v (node/value->node v))]
-    (if (= 1 (count path))
+  (let [value-node (if (satisfies? node/Node v) v (node/value->node v))
+        parent-path (vec (butlast path))
+        last-segment (last path)
+        root-loc (z/of-node root)]
+    (if (empty? parent-path)
       ;; Single-level path
-      (let [segment (first path)
-            loc (z/of-node root)]
+      (let [segment last-segment]
         (if (string? segment)
           ;; Object key
-          (if-let [val-loc (z/get-key loc segment)]
+          (if-let [val-loc (z/get-key root-loc segment)]
             (-> val-loc
                 (z/replace value-node)
                 z/root)
             ;; Key doesn't exist — append
-            (-> loc
+            (-> root-loc
                 (z/append-entry segment value-node)
                 z/root))
           ;; Array index
@@ -95,34 +131,29 @@
                 z/root)
             (throw (ex-info (str "Array index out of bounds: " segment)
                             {:index segment})))))
-      ;; Multi-level path
-      (let [parent-path (vec (butlast path))
-            last-segment (last path)]
-        (if-let [parent-loc (navigate-path root parent-path)]
-          (if (string? last-segment)
-            ;; Navigate into parent object
-            (let [parent-node (z/node parent-loc)]
-              (if (identical? :object (node/tag parent-node))
-                (if-let [val-loc (z/get-key parent-loc last-segment)]
-                  (-> val-loc
-                      (z/replace value-node)
-                      z/root)
-                  ;; Key doesn't exist in parent object — append entry
-                  (-> parent-loc
-                      (z/append-entry last-segment value-node)
-                      z/root))
-                (throw (ex-info (str "Expected object at path " (pr-str parent-path)
-                                     ", got " (node/tag parent-node))
-                                {:path parent-path}))))
-            ;; Array index in parent
-            (if-let [target (navigate-path root path)]
-              (-> target
-                  (z/replace value-node)
-                  z/root)
-              (throw (ex-info (str "Array index out of bounds: " last-segment)
-                              {:index last-segment}))))
-          (throw (ex-info (str "Path not found: " (pr-str parent-path))
-                          {:path parent-path})))))))
+      ;; Multi-level path — ensure all intermediates exist
+      (let [parent-loc (ensure-path root-loc parent-path)]
+        (if (string? last-segment)
+          (let [parent-node (z/node parent-loc)]
+            (if (identical? :object (node/tag parent-node))
+              (if-let [val-loc (z/get-key parent-loc last-segment)]
+                (-> val-loc
+                    (z/replace value-node)
+                    z/root)
+                ;; Key doesn't exist in parent object — append entry
+                (-> parent-loc
+                    (z/append-entry last-segment value-node)
+                    z/root))
+              (throw (ex-info (str "Expected object at path " (pr-str parent-path)
+                                   ", got " (node/tag parent-node))
+                              {:path parent-path}))))
+          ;; Array index in parent
+          (if-let [target (navigate-path root path)]
+            (-> target
+                (z/replace value-node)
+                z/root)
+            (throw (ex-info (str "Array index out of bounds: " last-segment)
+                            {:index last-segment}))))))))
 
 (defn update-in [root path f & args]
   (let [current (get-in root path)]

@@ -126,6 +126,35 @@
       (is (.contains ^String result "\"name\": \"my-app\""))
       (is (.contains ^String result "\"react\": \"^17.0.0\"")))))
 
+(deftest assoc-in-missing-intermediates-test
+  (testing "two-level missing path creates intermediate object"
+    (let [root (rj/parse-string "{}")
+          result (rj/to-string (rj/assoc-in root ["providers" "openai"] "sk-xyz"))]
+      (is (.contains ^String result "\"providers\""))
+      (is (.contains ^String result "\"openai\""))
+      (is (.contains ^String result "\"sk-xyz\""))))
+
+  (testing "three-level missing path creates all intermediates"
+    (let [root (rj/parse-string "{}")
+          result (rj/to-string (rj/assoc-in root ["a" "b" "c"] 42))]
+      (is (.contains ^String result "\"a\""))
+      (is (.contains ^String result "\"b\""))
+      (is (.contains ^String result "\"c\""))
+      (is (.contains ^String result "42"))))
+
+  (testing "mixed existing and missing segments"
+    (let [root (rj/parse-string "{\"providers\": {}}")
+          result (rj/to-string (rj/assoc-in root ["providers" "openai" "key"] "sk-xyz"))]
+      (is (.contains ^String result "\"providers\""))
+      (is (.contains ^String result "\"openai\""))
+      (is (.contains ^String result "\"key\""))
+      (is (.contains ^String result "\"sk-xyz\""))))
+
+  (testing "assoc-in result is valid — get-in round-trips"
+    (let [root (rj/parse-string "{}")
+          updated (rj/assoc-in root ["x" "y"] 99)]
+      (is (= 99 (rj/get-in updated ["x" "y"]))))))
+
 (deftest edit-nested-dependency-test
   (testing "update nested dependency version"
     (let [input "{\n  \"dependencies\": {\n    \"react\": \"^17.0.0\",\n    \"lodash\": \"^4.17.0\"\n  }\n}"

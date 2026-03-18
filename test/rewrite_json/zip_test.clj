@@ -211,6 +211,33 @@
     (is (.contains ^String result "/* config */"))
     (is (.contains ^String result "3000"))))
 
+(deftest append-entry-reindent-test
+  (testing "appending a nested object to a multiline parent uses multiline formatting"
+    (let [result (-> (z/of-string "{\n  \"a\": 1\n}")
+                     (z/append-entry "b" (node/value->node {"x" 1 "y" 2}))
+                     z/root-string)]
+      ;; The appended value must contain at least one newline (not inline)
+      (let [b-idx (.indexOf ^String result "\"b\"")
+            b-value (subs result b-idx)]
+        (is (pos? (.indexOf ^String b-value "\n"))
+            "appended nested object should be multiline"))))
+
+  (testing "appending a nested array to a multiline parent uses multiline formatting"
+    (let [result (-> (z/of-string "{\n  \"a\": 1\n}")
+                     (z/append-entry "items" (node/value->node [1 2 3]))
+                     z/root-string)]
+      (let [items-idx (.indexOf ^String result "\"items\"")
+            items-value (subs result items-idx)]
+        (is (pos? (.indexOf ^String items-value "\n"))
+            "appended nested array should be multiline"))))
+
+  (testing "appending a nested object to a compact object stays compact"
+    (let [result (-> (z/of-string "{\"a\": 1}")
+                     (z/append-entry "b" (node/value->node {"x" 1}))
+                     z/root-string)]
+      ;; Compact parent → value is not forced multiline (no extra newlines injected)
+      (is (.contains ^String result "\"b\"")))))
+
 (deftest root-string-identity-test
   (testing "of-string -> root-string is identity for unmodified tree"
     (doseq [input ["{}"

@@ -212,7 +212,7 @@
         ws-nodes (filter node/whitespace? children)
         ws-with-newlines (filter #(.contains ^String (node/string %) "\n") ws-nodes)]
     (if (seq ws-with-newlines)
-      (let [ws-str (node/string (first ws-with-newlines))
+      (let [ws-str ^String (node/string (first ws-with-newlines))
             ;; Get text after the last newline
             after-nl (subs ws-str (inc (.lastIndexOf ws-str "\n")))]
         {:newline true
@@ -228,6 +228,63 @@
       (when (>= i 0)
         (if (pred (v i)) i (recur (dec i)))))))
 
+(defn ^:private reindent-node
+  "Recursively adjust the whitespace inside a newly constructed value node
+   so that it matches the indentation style of its future container.
+
+   `indent-info`  – map returned by `infer-indent` for the container that
+                    will receive the new entry (keys: :newline, :indent,
+                    :ws-before).
+   `depth`        – how many extra levels deep we are inside the new node
+                    (0 = the immediate children of the container; starts at 1
+                    when we first enter the new value's children).
+
+   Only `:object` and `:array` nodes are re-indented; scalar values pass
+   through unchanged."
+  [value-node indent-info depth]
+  (let [{:keys [newline indent]} indent-info]
+    (if-not (and newline (contains? #{:object :array} (node/tag value-node)))
+      value-node
+      (let [child-indent (str indent (apply str (repeat depth "  ")))
+            closing-indent (str indent (apply str (repeat (dec depth) "  ")))
+            new-children
+            (mapv
+             (fn [child]
+               (cond
+                 ;; Whitespace containing a newline → replace with our indent
+                 (and (node/whitespace? child)
+                      (.contains ^String (node/string child) "\n"))
+                 (node/whitespace-node (str "\n" child-indent))
+
+                 ;; Recurse into nested containers
+                 (contains? #{:object :array} (node/tag child))
+                 (reindent-node child indent-info (inc depth))
+
+                 ;; Entry nodes: recurse into their value child
+                 (node/entry? child)
+                 (let [entry-children (node/children child)
+                       new-entry-children
+                       (mapv (fn [ec]
+                               (if (contains? #{:object :array} (node/tag ec))
+                                 (reindent-node ec indent-info (inc depth))
+                                 ec))
+                             entry-children)]
+                   (node/replace-children child new-entry-children))
+
+                 :else child))
+             (node/children value-node))
+            ;; Fix the closing whitespace (last whitespace before } or ])
+            ;; It should indent back to the parent level
+            last-ws-idx (find-last-idx node/whitespace? new-children)
+            final-children
+            (if (and last-ws-idx
+                     (.contains ^String (node/string (new-children last-ws-idx)) "\n"))
+              (assoc new-children last-ws-idx
+                     (node/whitespace-node (str "\n" closing-indent)))
+              new-children)]
+        (node/replace-children value-node final-children)))))
+
+
 (defn append-entry
   "Append a new key-value entry to an object.
    `loc` should be positioned at an object node.
@@ -239,7 +296,8 @@
         indent-info (infer-indent obj-node)
         key-n (node/string-node key-name)
         colon-n (node/->ColonNode (:colon-sep style))
-        new-entry (node/->EntryNode [key-n colon-n value-node])
+        indented-value (reindent-node value-node indent-info 1)
+        new-entry (node/->EntryNode [key-n colon-n indented-value])
         last-entry-idx (find-last-idx node/entry? children)
         new-children
         (if last-entry-idx
@@ -276,6 +334,7 @@
   (let [arr-node (z/node loc)
         children (vec (node/children arr-node))
         indent-info (infer-indent arr-node)
+        value-node (reindent-node value-node indent-info 1)
         last-val-idx (find-last-idx node/value-node? children)
         new-children
         (if last-val-idx
