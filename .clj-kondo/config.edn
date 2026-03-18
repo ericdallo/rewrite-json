@@ -1,0 +1,3 @@
+{:linters {:clojure-lsp/unused-public-var {:exclude [rewrite-json.core
+                                                     rewrite-json.zip
+                                                     rewrite-json.node]}}}

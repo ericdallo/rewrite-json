@@ -1,0 +1,14 @@
+{:paths ["src"]
+ :deps {}
+ :aliases {:dev {:extra-paths ["dev"]}
+           :test {:extra-paths ["test"]
+                  :extra-deps {nubank/matcher-combinators {:mvn/version "3.9.1"}
+                               lambdaisland/kaocha {:mvn/version "1.91.1392"}}
+                  :main-opts ["-m" "kaocha.runner"]}
+           :repl {:extra-paths ["dev" "test"]
+                  :extra-deps {nubank/matcher-combinators {:mvn/version "3.9.1"}
+                               lambdaisland/kaocha {:mvn/version "1.91.1392"}}}
+           :build {:deps {io.github.clojure/tools.build {:tag "v0.10.7" :sha "573711e"}
+                          slipset/deps-deploy {:mvn/version "0.2.2"}}
+                   :extra-paths ["resources"]
+                   :ns-default build}}}
