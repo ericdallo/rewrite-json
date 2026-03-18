@@ -4,7 +4,7 @@
   <packaging>jar</packaging>
   <groupId>dev.ericdallo</groupId>
   <artifactId>rewrite-json</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
   <name>rewrite-json</name>
   <description>A Clojure library for format-preserving JSON and JSONC editing</description>
   <url>https://github.com/ericdallo/rewrite-json</url>
